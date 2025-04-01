@@ -31,7 +31,7 @@ namespace Test.ClassPropertyMap
                 {
                     return String.Join(
                         ExpressionHelper.ArgumentSeparator,
-                        PropertyMappings.Select(mapping => MemberName + "." + mapping.Name)
+                        PropertyMappings.Select(mapping => MemberName + ExpressionHelper.MemberSeparator + mapping.Name)
                         );
                 }
                 return GetElementDisplayName(GetType());
@@ -56,7 +56,7 @@ namespace Test.ClassPropertyMap
             return false;
         }
 
-        internal static Expression BuildClassPropertyMapping(Expression source, ConstantExpression instance, string baseMemberName, string propertyName, string sourceSelector)
+        internal static Expression BuildClassPropertyMapping(Expression source, ConstantExpression instance, string baseMemberName, string targetMemberName, string sourceSelector)
         {
             var element = instance.Value;
             if (element is IWorkflowExpressionBuilder workflowBuilder && workflowBuilder.Workflow != null)
@@ -108,7 +108,9 @@ namespace Test.ClassPropertyMap
         
             var sourceType = source.Type.GetGenericArguments()[0];
             var parameter = Expression.Parameter(sourceType);
-            var body = BuildMemberAssignment(property, propertyName, parameter, sourceSelector);
+            string[] targetPath = targetMemberName.Split(new[] { ExpressionHelper.MemberSeparator }, StringSplitOptions.RemoveEmptyEntries);
+
+            var body = BuildMemberAssignment(property, targetPath, parameter, sourceSelector);
             
 
             var actionType = Expression.GetActionType(parameter.Type);
@@ -121,7 +123,7 @@ namespace Test.ClassPropertyMap
                 action);
         }
 
-        internal static Expression BuildMemberAssignment(MemberExpression baseMember, string childMemberName,  ParameterExpression sourceType, string sourceSelector)
+        internal static Expression BuildMemberAssignment(MemberExpression baseMember, string[] childMemberPath,  ParameterExpression sourceType, string sourceSelector)
         {
             Expression body;
             if (baseMember.Type.IsValueType)
@@ -129,10 +131,22 @@ namespace Test.ClassPropertyMap
                 var temp = Expression.Variable(baseMember.Type);
                 var origVal = Expression.Assign(temp, baseMember);
 
+                var childMemberName = childMemberPath[0];
                 var child = Expression.PropertyOrField(temp, childMemberName);
 
-                var newVal = BuildTypeMapping(sourceType, child.Type, sourceSelector);
-                var assignVal = Expression.Assign(child, newVal);
+                Expression assignVal;
+                Expression newVal;
+                if (childMemberPath.Length > 1)
+                {
+                    assignVal = BuildMemberAssignment(child, childMemberPath.Skip(1).ToArray(), sourceType, sourceSelector);
+                }
+                else
+                {
+                    newVal = BuildTypeMapping(sourceType, child.Type, sourceSelector);
+                    assignVal = Expression.Assign(child, newVal);
+
+                }
+                
 
                 var writeBack = Expression.Assign(baseMember, temp);
                 body = Expression.Block(new[] { temp }, origVal, assignVal, writeBack);
@@ -140,8 +154,17 @@ namespace Test.ClassPropertyMap
             }
             else
             {
+                var childMemberName = childMemberPath[0];
                 var child = Expression.PropertyOrField(baseMember, childMemberName);
-                Expression newVal = BuildTypeMapping(sourceType, child.Type, sourceSelector);
+                Expression newVal;
+                if (childMemberPath.Length > 1)
+                {
+                    newVal = BuildMemberAssignment(child, childMemberPath.Skip(1).ToArray(), sourceType, sourceSelector);
+                }
+                else
+                {
+                    newVal = BuildTypeMapping(sourceType, child.Type, sourceSelector);
+                }
                 body = Expression.Assign(child, newVal);
             }
             return body;
