@@ -53,22 +53,22 @@ namespace Test.ClassPropertyMap
             var instance = Expression.Constant(workflowElement);
             foreach (var node in nodeTree)
             {
-                argument = BuildNestedPropertyMapping(argument, instance, node);
+                argument = BuildNestedPropertyMapping(argument, instance, node.Name, node);
             }
 
             return false;
         }
 
-        internal class NestedPropertyNode
+        internal class NestedPropertyMapNode
         {
-            public List<NestedPropertyNode> Children { get; } = new List<NestedPropertyNode>();
+            public List<NestedPropertyMapNode> Children { get; } = new List<NestedPropertyMapNode>();
             public string Name { get; set; }
             public string Selector { get; set; }
         }
 
-        List<NestedPropertyNode> BuildNodeTree()
+        List<NestedPropertyMapNode> BuildNodeTree()
         {
-            List<NestedPropertyNode> tree = new List<NestedPropertyNode>();
+            List<NestedPropertyMapNode> tree = new List<NestedPropertyMapNode>();
             foreach (var mapping in PropertyMappings)
             {
                 string[] targetPath = mapping.Name.Split(new[] { ExpressionHelper.MemberSeparator }, StringSplitOptions.RemoveEmptyEntries);
@@ -79,12 +79,12 @@ namespace Test.ClassPropertyMap
             return tree;
         }
 
-        internal static void BuildNodeBranch(List<NestedPropertyNode> nodes, string[] targetPath, string selector)
+        internal static void BuildNodeBranch(List<NestedPropertyMapNode> nodes, string[] targetPath, string selector)
         {
-            NestedPropertyNode node = nodes.Find(n => n.Name == targetPath[0]);
+            NestedPropertyMapNode node = nodes.Find(n => n.Name == targetPath[0]);
             if (node == null)
             {
-                NestedPropertyNode newNode = new NestedPropertyNode();
+                NestedPropertyMapNode newNode = new NestedPropertyMapNode();
                 newNode.Name = targetPath[0];
                 nodes.Add(newNode);
                 if (targetPath.Length > 1)
@@ -99,22 +99,23 @@ namespace Test.ClassPropertyMap
             }
             else
             {
-                if (targetPath.Length > 1)
+                if (targetPath.Length == 0 || node.Children.Count != 0)
+                {
+                    //This means that the target member of an assignment has been assigned before
+                    //This should not happen, so we throw an error
+                    throw new InvalidOperationException(string.Format("Trying to assign member {0} more than once", string.Join(".", targetPath)));
+                }
+                else
                 {
                     BuildNodeBranch(node.Children, targetPath.Skip(1).ToArray(), selector);
                 }
-                else
-                //This means that the target member of an assignment has been assigned before
-                //This should not happen, so we throw an error
-                {
-                    throw new InvalidOperationException(string.Format("Trying to assign member {0} more than once", string.Join(".", targetPath)));
-                }
+                
                 
                 
             }
         }
 
-        internal static Expression BuildNestedPropertyMapping(Expression source, ConstantExpression instance, NestedPropertyNode root)
+        internal static Expression BuildNestedPropertyMapping(Expression source, ConstantExpression instance, string propertyName, NestedPropertyMapNode root)
         {
             var element = instance.Value;
             if (element is IWorkflowExpressionBuilder workflowBuilder && workflowBuilder.Workflow != null)
@@ -123,13 +124,13 @@ namespace Test.ClassPropertyMap
                                     let externalizedBuilder = Unwrap(node.Value) as IExternalizedMappingBuilder
                                     where externalizedBuilder != null
                                     from workflowProperty in externalizedBuilder.GetExternalizedProperties()
-                                    where workflowProperty.ExternalizedName == root.Name //Look for the root property/member
+                                    where workflowProperty.ExternalizedName == propertyName //Look for the root property/member
                                     select new { node, workflowProperty }).FirstOrDefault();
                 if (inputBuilder == null)
                 {
                     throw new InvalidOperationException(string.Format(
                         "The specified property '{0}' was not found in the nested workflow.",
-                        root.Name));
+                        propertyName));
                 }
 
                 // Checking nested externalized properties requires only one level of indirection
@@ -140,10 +141,12 @@ namespace Test.ClassPropertyMap
                 {
                     var successorElement = GetWorkflowElement(successor.Target.Value);
                     var successorInstance = Expression.Constant(successorElement);
-                    argument = BuildNestedPropertyMapping(argument, successorInstance, root);
+                    argument = BuildNestedPropertyMapping(argument, successorInstance, inputBuilder.workflowProperty.Name, root);
                 }
                 return argument;
             }
+
+            root.Name = propertyName; //If there were nested workflows with changing externalized properties, replace name with the actual property name
             MemberExpression property = default;
             if (element is ICustomTypeDescriptor typeDescriptor)
             {
@@ -177,11 +180,11 @@ namespace Test.ClassPropertyMap
 
         }
 
-        internal static Expression BuildNestedAssignmentExpression(Expression parent, ParameterExpression sourceType, NestedPropertyNode node)
+        internal static Expression BuildNestedAssignmentExpression(Expression parent, ParameterExpression sourceType, NestedPropertyMapNode node)
         {
             var member = Expression.PropertyOrField(parent, node.Name);
             List<Expression> body = new List<Expression>();
-            if (node.Selector != null)
+            if (node.Children.Count == 0)
             {
                 var selectorValue = BuildTypeMapping(sourceType, member.Type, node.Selector);
                 return Expression.Assign(member, selectorValue);
